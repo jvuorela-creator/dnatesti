@@ -1,67 +1,86 @@
+import streamlit as st
 import pandas as pd
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
-import numpy as np
+import plotly.graph_objects as go
 
-# 1. Lataa data (vaihda tiedostonimi tarvittaessa)
-filename = 'Shared DNA segments - one to many comparison.csv'
-df = pd.read_csv(filename)
+# Sivun asetukset
+st.set_page_config(page_title="DNA 3D", layout="wide")
 
-# 2. Datan esikäsittely
-# Muutetaan osumien nimet numeroiksi Y-akselia varten
-matches = df['Match Name'].unique()
-match_map = {name: i for i, name in enumerate(matches)}
-df['Match_Y'] = df['Match Name'].map(match_map)
+st.title("🧬 DNA-segmenttien 3D-visualisointi")
 
-# Varmistetaan, että kromosomit ovat numeroita (X -> 23)
-df['Chromosome'] = df['Chromosome'].replace({'X': 23, 'x': 23, 'Y': 24, 'y': 24})
-df['Chromosome'] = pd.to_numeric(df['Chromosome'], errors='coerce')
+# 1. Tiedoston lataus
+uploaded_file = st.file_uploader("Valitse CSV-tiedosto", type=["csv"])
 
-# 3. Luodaan 3D-kuvaaja
-fig = plt.figure(figsize=(14, 10))
-ax = fig.add_subplot(111, projection='3d')
+if uploaded_file is not None:
+    try:
+        # Luetaan data
+        df = pd.read_csv(uploaded_file)
+        
+        # DEBUG: Näytetään data, jotta nähdään onko lataus onnistunut
+        st.write("Ladattu data (ensimmäiset rivit):")
+        st.dataframe(df.head())
 
-# Värit eri osumille
-colors = plt.cm.Set2(np.linspace(0, 1, len(matches)))
-proxies = [] # Selitettä varten
+        # 2. Esikäsittely
+        # Varmistetaan sarakenimet (poistetaan turhat välilyönnit nimistä varmuuden vuoksi)
+        df.columns = df.columns.str.strip()
+        
+        # Tarkistetaan että tarvittavat sarakkeet löytyvät
+        required_cols = ['Match Name', 'Chromosome', 'Start Location', 'End Location']
+        if not all(col in df.columns for col in required_cols):
+            st.error(f"Virhe: CSV-tiedostosta puuttuu jokin näistä sarakkeista: {required_cols}")
+            st.stop()
 
-# 4. Piirretään palkit
-for i, match_name in enumerate(matches):
-    sub_df = df[df['Match Name'] == match_name]
-    
-    # Koordinaatit
-    # X = Kromosomi, Y = Osuma, Z = Sijainti (Start)
-    x = sub_df['Chromosome'].values - 0.4
-    y = sub_df['Match_Y'].values - 0.4
-    z = sub_df['Start Location'].values
-    
-    # Palkin mitat
-    dx = 0.8  # Palkin leveys (kromosomi-akselilla)
-    dy = 0.8  # Palkin syvyys (osuma-akselilla)
-    dz = sub_df['End Location'].values - sub_df['Start Location'].values # Palkin korkeus (segmentin pituus)
-    
-    color = colors[i]
-    
-    ax.bar3d(x, y, z, dx, dy, dz, color=color, alpha=0.7)
-    
-    # Tallennetaan väri selitettä varten
-    proxies.append(plt.Rectangle((0,0), 1, 1, fc=color))
+        # Osumien numerointi Y-akselia varten
+        matches = df['Match Name'].unique()
+        match_map = {name: i for i, name in enumerate(matches)}
+        df['Match_Y'] = df['Match Name'].map(match_map)
 
-# 5. Akselien asetukset
-ax.set_xlabel('Kromosomi')
-ax.set_ylabel('Osuma')
-ax.set_zlabel('Sijainti kromosomissa (bp)')
+        # Kromosomien numerointi (X=23, Y=24)
+        df['Chromosome'] = df['Chromosome'].replace({'X': 23, 'x': 23, 'Y': 24, 'y': 24})
+        df['Chromosome'] = pd.to_numeric(df['Chromosome'], errors='coerce')
+        df = df.dropna(subset=['Chromosome']) # Poistetaan rivit joissa kromosomi ei kelpaa
 
-# Asetetaan X-akselin merkit kromosomien mukaan
-all_chroms = sorted(df['Chromosome'].dropna().unique().astype(int))
-ax.set_xticks(all_chroms)
+        # 3. Luodaan Plotly 3D-kuvaaja
+        fig = go.Figure()
 
-# Asetetaan Y-akselin merkit osumien nimien mukaan
-ax.set_yticks(range(len(matches)))
-ax.set_yticklabels(matches, rotation=-15, verticalalignment='baseline')
+        # Käydään läpi jokainen osuma ja lisätään kuvaajaan
+        for match_name in matches:
+            sub_df = df[df['Match Name'] == match_name]
+            
+            # Rakennetaan viivat segmenteille
+            # Plotlyssa katkonaiset viivat tehdään lisäämällä None väliin
+            x_vals = []
+            y_vals = []
+            z_vals = [] # Z on tässä tapauksessa sijainti (bp)
+            
+            for _, row in sub_df.iterrows():
+                # Viiva alkaa (Start) ja loppuu (End)
+                x_vals.extend([row['Chromosome'], row['Chromosome'], None])
+                y_vals.extend([row['Match_Y'], row['Match_Y'], None])
+                z_vals.extend([row['Start Location'], row['End Location'], None])
+            
+            fig.add_trace(go.Scatter3d(
+                x=x_vals,
+                y=y_vals,
+                z=z_vals,
+                mode='lines',
+                line=dict(width=10), # Viivan paksuus
+                name=match_name
+            ))
 
-ax.set_title('3D-visualisointi: Jaetut DNA-segmentit')
-ax.legend(proxies, matches, loc='upper left', bbox_to_anchor=(1.05, 1), title="Osumat")
+        # Akselien nimet
+        fig.update_layout(
+            scene=dict(
+                xaxis=dict(title='Kromosomi', tickmode='linear', tick0=1, dtick=1),
+                yaxis=dict(title='Osuma', tickvals=list(range(len(matches))), ticktext=matches),
+                zaxis=dict(title='Sijainti (bp)'),
+            ),
+            margin=dict(r=0, l=0, b=0, t=0), # Minimoidaan reunat
+            height=700
+        )
 
-plt.tight_layout()
-plt.show() # Tai plt.savefig('3d_kuva.png')
+        st.plotly_chart(fig, use_container_width=True)
+
+    except Exception as e:
+        st.error(f"Tapahtui virhe: {e}")
+else:
+    st.info("Lataa CSV-tiedosto aloittaaksesi.")
