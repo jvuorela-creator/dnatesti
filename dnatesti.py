@@ -1,99 +1,67 @@
-import streamlit as st
 import pandas as pd
-import plotly.express as px
-import re
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+import numpy as np
 
-# Sivun asetukset
-st.set_page_config(page_title="MyHeritage DNA Visualisoija", layout="wide")
+# 1. Lataa data (vaihda tiedostonimi tarvittaessa)
+filename = 'Shared DNA segments - one to many comparison.csv'
+df = pd.read_csv(filename)
 
-st.title("🧬 MyHeritage DNA-tulosten Visualisointi")
-st.markdown("""
-Tämä työkalu lukee MyHeritagen viemän (export) CSV-tiedoston ja luo siitä graafisia yhteenvetoja.
-Lataa tiedosto alta aloittaaksesi.
-""")
+# 2. Datan esikäsittely
+# Muutetaan osumien nimet numeroiksi Y-akselia varten
+matches = df['Match Name'].unique()
+match_map = {name: i for i, name in enumerate(matches)}
+df['Match_Y'] = df['Match Name'].map(match_map)
 
-# Tiedoston lataaja
-uploaded_file = st.file_uploader("Lataa MyHeritage DNA Matches CSV-tiedosto", type=['csv'])
+# Varmistetaan, että kromosomit ovat numeroita (X -> 23)
+df['Chromosome'] = df['Chromosome'].replace({'X': 23, 'x': 23, 'Y': 24, 'y': 24})
+df['Chromosome'] = pd.to_numeric(df['Chromosome'], errors='coerce')
 
-def clean_currency(x):
-    """Apufunktio cM-arvon siivoamiseen, jos se on muodossa '0.5% (35.4 cM)'"""
-    if isinstance(x, str):
-        # Etsitään luku cM-tekstin edestä tai sulkujen sisältä
-        match = re.search(r'\(?(\d+(\.\d+)?)\s*cM\)?', x)
-        if match:
-            return float(match.group(1))
-        return 0.0
-    return x
+# 3. Luodaan 3D-kuvaaja
+fig = plt.figure(figsize=(14, 10))
+ax = fig.add_subplot(111, projection='3d')
 
-if uploaded_file is not None:
-    try:
-        # Luetaan CSV. MyHeritage-tiedostot käyttävät usein pilkkua erottimena.
-        df = pd.read_csv(uploaded_file)
+# Värit eri osumille
+colors = plt.cm.Set2(np.linspace(0, 1, len(matches)))
+proxies = [] # Selitettä varten
 
-        # Tarkistetaan yleisimmät sarakkeet ja yritetään tunnistaa oikeat
-        # MyHeritage CSV:ssä sarakkeet ovat usein: Name, Age, Country, Shared DNA, Shared segments, Largest segment
-        
-        # Normalisoidaan sarakkeiden nimet (poistetaan välilyönnit alusta/lopusta)
-        df.columns = df.columns.str.strip()
+# 4. Piirretään palkit
+for i, match_name in enumerate(matches):
+    sub_df = df[df['Match Name'] == match_name]
+    
+    # Koordinaatit
+    # X = Kromosomi, Y = Osuma, Z = Sijainti (Start)
+    x = sub_df['Chromosome'].values - 0.4
+    y = sub_df['Match_Y'].values - 0.4
+    z = sub_df['Start Location'].values
+    
+    # Palkin mitat
+    dx = 0.8  # Palkin leveys (kromosomi-akselilla)
+    dy = 0.8  # Palkin syvyys (osuma-akselilla)
+    dz = sub_df['End Location'].values - sub_df['Start Location'].values # Palkin korkeus (segmentin pituus)
+    
+    color = colors[i]
+    
+    ax.bar3d(x, y, z, dx, dy, dz, color=color, alpha=0.7)
+    
+    # Tallennetaan väri selitettä varten
+    proxies.append(plt.Rectangle((0,0), 1, 1, fc=color))
 
-        # Etsitään Shared DNA -sarake
-        cM_col = None
-        candidates = ['Shared DNA', 'Shared DNA (cM)', 'Jaettu DNA']
-        for col in df.columns:
-            if any(c in col for c in candidates):
-                cM_col = col
-                break
-        
-        segment_col = None
-        seg_candidates = ['Shared segments', 'Segments', 'Jaetut segmentit']
-        for col in df.columns:
-            if any(c in col for c in seg_candidates):
-                segment_col = col
-                break
+# 5. Akselien asetukset
+ax.set_xlabel('Kromosomi')
+ax.set_ylabel('Osuma')
+ax.set_zlabel('Sijainti kromosomissa (bp)')
 
-        if cM_col:
-            # Datan puhdistus: Muutetaan cM-sarake numeroiksi
-            df['Cleaned_cM'] = df[cM_col].apply(clean_currency)
-            
-            # Sivupalkin suodattimet
-            st.sidebar.header("Suodattimet")
-            min_cm = st.sidebar.slider("Minimi cM", 0, int(df['Cleaned_cM'].max()), 8)
-            max_cm = st.sidebar.slider("Maksimi cM", 0, int(df['Cleaned_cM'].max()), int(df['Cleaned_cM'].max()))
-            
-            # Suodatetaan data
-            filtered_df = df[(df['Cleaned_cM'] >= min_cm) & (df['Cleaned_cM'] <= max_cm)]
-            
-            st.write(f"Näytetään **{len(filtered_df)}** osumaa valitulla välillä ({min_cm} - {max_cm} cM).")
+# Asetetaan X-akselin merkit kromosomien mukaan
+all_chroms = sorted(df['Chromosome'].dropna().unique().astype(int))
+ax.set_xticks(all_chroms)
 
-            # --- Visualisoinnit ---
-            
-            col1, col2 = st.columns(2)
+# Asetetaan Y-akselin merkit osumien nimien mukaan
+ax.set_yticks(range(len(matches)))
+ax.set_yticklabels(matches, rotation=-15, verticalalignment='baseline')
 
-            with col1:
-                st.subheader("Osumien jakauma (Histogrammi)")
-                fig_hist = px.histogram(filtered_df, x="Cleaned_cM", nbins=50, 
-                                        title="Kuinka monta osumaa eri cM-tasoilla",
-                                        labels={'Cleaned_cM': 'Jaettu DNA (cM)'})
-                st.plotly_chart(fig_hist, use_container_width=True)
+ax.set_title('3D-visualisointi: Jaetut DNA-segmentit')
+ax.legend(proxies, matches, loc='upper left', bbox_to_anchor=(1.05, 1), title="Osumat")
 
-            with col2:
-                if segment_col:
-                    st.subheader("Laatu: cM vs. Segmenttien määrä")
-                    fig_scatter = px.scatter(filtered_df, x="Cleaned_cM", y=segment_col, 
-                                             hover_data=[df.columns[0]], # Oletetaan että 1. sarake on Nimi
-                                             title="Kokonais-cM vs. Segmenttien lkm",
-                                             labels={'Cleaned_cM': 'Jaettu DNA (cM)', segment_col: 'Segmenttien määrä'})
-                    st.plotly_chart(fig_scatter, use_container_width=True)
-                else:
-                    st.warning("Segmentti-tietoa ei löytynyt, sirontakuviota ei voida piirtää.")
-
-            # Taulukko datasta
-            st.subheader("Datarivit")
-            st.dataframe(filtered_df.sort_values(by='Cleaned_cM', ascending=False))
-            
-        else:
-            st.error("Ei löytynyt saraketta 'Shared DNA' tai vastaavaa. Tarkista CSV-tiedoston otsikot.")
-            st.write("Löydetyt sarakkeet:", df.columns.tolist())
-
-    except Exception as e:
-        st.error(f"Virhe tiedoston lukemisessa: {e}")
+plt.tight_layout()
+plt.show() # Tai plt.savefig('3d_kuva.png')
